@@ -153,10 +153,8 @@ install_brew_pkg() {
 
 install_tools() {
   step "Installing required tools"
-  install_brew_pkg "podman"
-  install_brew_pkg "podman-desktop" "podman-desktop" "cask"
-  install_brew_pkg "kind"
-  install_brew_pkg "helm"
+
+  # Install krunkit FIRST — Podman detects it at install time and defaults to libkrun provider
   if command -v krunkit &>/dev/null; then
     warn "krunkit already installed — skipping"
   else
@@ -165,7 +163,11 @@ install_tools() {
     brew install "$KRUNKIT_PKG"
     success "krunkit installed"
   fi
-  # krunkit depends on libkrun-efi which is pulled in automatically as a brew dependency.
+
+  install_brew_pkg "podman"
+  install_brew_pkg "podman-desktop" "podman-desktop" "cask"
+  install_brew_pkg "kind"
+  install_brew_pkg "helm"
 }
 
 # =============================================================================
@@ -175,8 +177,30 @@ setup_podman_machine() {
   step "Setting up Podman machine"
 
   if podman machine list --format '{{.Name}}' 2>/dev/null | sed 's/\*$//' | grep -q "^${MACHINE_NAME}$"; then
+    # Verify existing machine is using libkrun
+    local config_dir
+    config_dir=$(podman machine inspect "$MACHINE_NAME" 2>/dev/null | grep -i '"Path"' | head -1 | tr -d ' ",' | cut -d: -f2)
+    if echo "$config_dir" | grep -q "applehv"; then
+      error "Podman machine '$MACHINE_NAME' exists but uses applehv instead of libkrun (no GPU passthrough). Remove it and re-run:
+       podman machine stop $MACHINE_NAME
+       podman machine rm $MACHINE_NAME
+       /opt/homebrew/bin/bash setup.sh"
+    fi
     warn "Podman machine '$MACHINE_NAME' already exists — skipping init"
   else
+    # Ensure libkrun is set as the provider before init
+    # Without this, Podman may default to applehv which does not expose /dev/dri
+    local containers_conf="$HOME/.config/containers/containers.conf"
+    if [[ ! -f "$containers_conf" ]] || ! grep -q "provider.*libkrun" "$containers_conf"; then
+      info "Configuring Podman to use libkrun provider..."
+      mkdir -p "$(dirname "$containers_conf")"
+      cat > "$containers_conf" << 'EOF'
+[machine]
+provider = "libkrun"
+EOF
+      success "Podman provider set to libkrun"
+    fi
+
     info "Creating Podman machine '$MACHINE_NAME'..."
     podman machine init \
       --cpus      "$MACHINE_CPU" \

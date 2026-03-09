@@ -181,6 +181,60 @@ podman machine stop podman-machine-default
 
 ---
 
+## Updating the Ollama Image
+
+The Ollama image is built from source inside the Podman VM with Vulkan patches applied for krunkit/virtio-gpu compatibility. When a new version of Ollama is released, the image needs to be rebuilt and reloaded into the kind cluster.
+
+### 1. Check the current Ollama version
+```bash
+kubectl exec -it <ollama-pod-name> -n ollama -- ollama --version
+```
+
+### 2. Rebuild the image
+The Dockerfile clones `ollama/ollama` from GitHub at build time, so rebuilding automatically pulls the latest version:
+```bash
+# Remove the existing image from the VM so the script rebuilds it
+podman machine ssh podman-machine-default -- podman rmi fedora-ollama-vulkan:v1 2>/dev/null || true
+
+# Remove from the kind node so it gets reloaded
+podman machine ssh podman-machine-default -- \
+  podman exec ai-cluster-control-plane \
+  ctr -n k8s.io images rm docker.io/library/fedora-ollama-vulkan:v1 2>/dev/null || true
+```
+
+### 3. Re-run the setup script
+The script detects the image is missing and rebuilds and reloads it automatically:
+```bash
+/opt/homebrew/bin/bash setup.sh
+```
+
+### 4. Restart the Ollama deployment to pick up the new image
+```bash
+kubectl rollout restart deployment/ollama -n ollama
+kubectl rollout status deployment/ollama -n ollama
+```
+
+### 5. Verify the new version
+```bash
+kubectl exec -it <ollama-pod-name> -n ollama -- ollama --version
+```
+
+> **Note:** The build takes 10–20 minutes as it compiles Ollama from source with Vulkan support. Downloaded models are stored on a persistent volume and are not affected by image rebuilds.
+
+### Pinning a specific Ollama version
+To pin to a specific Ollama release instead of always building latest, edit `ollama/macos/Dockerfile` and change the clone line:
+```dockerfile
+# Replace this:
+RUN git clone https://github.com/ollama/ollama.git /ollama
+
+# With this (example for v0.9.0):
+RUN git clone --branch v0.9.0 --depth 1 https://github.com/ollama/ollama.git /ollama
+```
+
+Then rebuild following steps 2–4 above.
+
+---
+
 ## Managing Ollama Models
 
 Models are configured in `helm/ollama/values.yaml` under the `models.pull` list:
