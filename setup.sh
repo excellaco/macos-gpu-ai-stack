@@ -324,6 +324,42 @@ create_namespaces() {
 # =============================================================================
 # 8. HELM INSTALLS
 # =============================================================================
+tail_ollama_init_logs() {
+  local ns="$1"
+  local timeout=600 elapsed=0
+
+  info "Waiting for Ollama init job pod to start..."
+  until kubectl get pods -n "$ns" 2>/dev/null | grep -q "ollama-model-loader"; do
+    (( elapsed >= timeout )) && warn "Timed out waiting for Ollama init pod — skipping log tail" && return 0
+    sleep 5; (( elapsed += 5 ))
+    info "  Still waiting for init pod... (${elapsed}s / ${timeout}s)"
+  done
+
+  local init_pod
+  init_pod=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | grep "ollama-model-loader" | awk '{print $1}' | head -1)
+  [[ -z "$init_pod" ]] && warn "Could not find Ollama init pod — skipping log tail" && return 0
+
+  info "Tailing Ollama init pod logs: $init_pod"
+  info "  (This may take several minutes depending on model size and internet speed)"
+  echo ""
+
+  # Wait for pod to be running or completed before tailing
+  until kubectl get pod "$init_pod" -n "$ns" 2>/dev/null | grep -qE "Running|Completed|Error"; do
+    sleep 3
+  done
+
+  kubectl logs -f "$init_pod" -n "$ns" 2>/dev/null || \
+    warn "Log stream ended — init pod may have completed"
+
+  echo ""
+  info "Waiting for Ollama init job to complete..."
+  kubectl wait --for=condition=complete job \
+    -l "app.kubernetes.io/instance=ollama" \
+    -n "$ns" \
+    --timeout=600s 2>/dev/null || \
+    warn "Init job did not complete within timeout — check: kubectl get pods -n $ns"
+}
+
 install_helm_charts() {
   step "Installing Helm charts"
   for i in "${!HELM_NAMES[@]}"; do
@@ -334,7 +370,13 @@ install_helm_charts() {
       warn "Helm release '$name' already exists in '$ns' — skipping"
     else
       info "Installing '$name' from $chart into namespace '$ns'..."
-      helm install "$name" "$chart" -n "$ns"
+      helm install "$name" "$chart" -n "$ns" &
+      local helm_pid=$!
+      # Tail init job logs for ollama so the user can see model download progress
+      if [[ "$name" == "ollama" ]]; then
+        tail_ollama_init_logs "$ns"
+      fi
+      wait "$helm_pid" || error "Helm install failed for '$name'"
       success "Helm release '$name' installed"
     fi
   done

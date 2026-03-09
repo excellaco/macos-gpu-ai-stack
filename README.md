@@ -47,7 +47,7 @@ Adjust resources to match your machine. Recommended starting point:
 podman:
   machine_name: podman-machine-default
   cpu: 8
-  memory: 16384       # 16GB — increase as needed, and reduce if you experience VM instability
+  memory: 16384       # 16GB — reduce if you experience VM instability
   disk: 100
 
 krunkit:
@@ -77,7 +77,7 @@ helm:
     namespace: n8n
 ```
 
-> **Note on memory:** libkrun-efi can crash the VM under heavy memory pressure. If you experience instability, reduce `memory` in `config.yaml` and recreate the machine. 21943 (21.43GB) is a tested, stable value on a 36GB host.
+> **Note on memory:** libkrun-efi can crash the VM under heavy memory pressure. If you experience instability, reduce `memory` in `config.yaml` and recreate the machine. 16384 (16GB) is a stable value on a 36GB host.
 
 ### 3. Review kind-config.yaml
 Port mappings are set at cluster creation time and cannot be changed without recreating the cluster. Add all ports you need upfront:
@@ -92,26 +92,16 @@ nodes:
       - hostPath: /dev/dri
         containerPath: /dev/dri
         propagation: HostToContainer
-  # Map ports from Kind container to your host machine
     extraPortMappings:
-    - containerPort: 30678    # n8n NodePort
-      hostPort: 30678         # Access via localhost:30678
-      protocol: TCP
-    - containerPort: 30434    # ollama NodePort
-      hostPort: 30434         # Access via localhost:30434
-      protocol: TCP
-    - containerPort: 80       # HTTP ingress
-      hostPort: 8080          # Access via localhost:8080  
-      protocol: TCP
-    - containerPort: 443      # HTTPS ingress  
-      hostPort: 8443          # Access via localhost:8443
-      protocol: TCP
-    - containerPort: 30080    # Alternative HTTP port
-      hostPort: 30080         # Access via localhost:30080
-      protocol: TCP
-    - containerPort: 30443    # Alternative HTTPS port
-      hostPort: 30443         # Access via localhost:30443
-      protocol: TCP
+      - containerPort: 30678    # n8n NodePort
+        hostPort: 30678
+        protocol: TCP
+      - containerPort: 30080    # HTTP ingress
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 30443    # HTTPS ingress
+        hostPort: 8443
+        protocol: TCP
 ```
 
 ### 4. Run the setup script
@@ -187,6 +177,65 @@ kubectl get nodes
 ```bash
 kubectl delete --all pods -A 2>/dev/null || true
 podman machine stop podman-machine-default
+```
+
+---
+
+## Managing Ollama Models
+
+Models are configured in `helm/ollama/values.yaml` under the `models.pull` list:
+
+```yaml
+models:
+  pull:
+    - llama3.2
+    - mistral
+    - gpt-oss:20b
+```
+
+### Adding or removing models
+Edit `helm/ollama/values.yaml` and update the list, then upgrade the Helm release:
+```bash
+helm upgrade ollama ./helm/ollama -n ollama
+```
+
+The `ollama-model-loader` job will run and pull any new models. Already-downloaded models are skipped.
+
+### Pulling from HuggingFace directly
+Use the `hf.co/` prefix to pull a model directly from HuggingFace:
+```yaml
+models:
+  pull:
+    - hf.co/bartowski/openai_gpt-oss-20b-GGUF:Q4_K_M
+```
+
+### Pulling a model manually
+```bash
+kubectl exec -it <ollama-pod-name> -n ollama -- ollama pull <model-name>
+
+# Examples
+kubectl exec -it <ollama-pod-name> -n ollama -- ollama pull llama3.2
+kubectl exec -it <ollama-pod-name> -n ollama -- ollama pull hf.co/bartowski/openai_gpt-oss-20b-GGUF:Q4_K_M
+```
+
+### Listing downloaded models
+```bash
+kubectl exec -it <ollama-pod-name> -n ollama -- ollama list
+```
+
+### Removing a model
+```bash
+kubectl exec -it <ollama-pod-name> -n ollama -- ollama rm <model-name>
+```
+
+### GPU tuning
+GPU and inference settings are also configured in `helm/ollama/values.yaml` under `env`:
+```yaml
+env:
+  OLLAMA_NUM_GPU: "999"       # number of layers to offload to GPU (999 = all)
+  OLLAMA_NUM_CTX: "8192"      # context window size
+  OLLAMA_NUM_THREAD: "8"      # CPU threads for non-GPU work
+  OLLAMA_KEEP_ALIVE: "-1"     # keep model loaded in GPU memory permanently
 ```
 
 ---
