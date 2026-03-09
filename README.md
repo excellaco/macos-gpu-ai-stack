@@ -92,16 +92,25 @@ nodes:
       - hostPath: /dev/dri
         containerPath: /dev/dri
         propagation: HostToContainer
+  # Map ports from Kind container to your host machine
     extraPortMappings:
-      - containerPort: 30678    # n8n NodePort
-        hostPort: 30678
-        protocol: TCP
-      - containerPort: 30080    # HTTP ingress
-        hostPort: 8080
-        protocol: TCP
-      - containerPort: 30443    # HTTPS ingress
-        hostPort: 8443
-        protocol: TCP
+    - containerPort: 30678    # n8n NodePort
+      hostPort: 30678         # Access via localhost:30678
+    - containerPort: 30434    # ollama NodePort
+      hostPort: 30434         # Access via localhost:30678
+      protocol: TCP
+    - containerPort: 80       # HTTP ingress
+      hostPort: 8080          # Access via localhost:8080  
+      protocol: TCP
+    - containerPort: 443      # HTTPS ingress  
+      hostPort: 8443          # Access via localhost:8443
+      protocol: TCP
+    - containerPort: 30080    # Alternative HTTP port
+      hostPort: 30080         # Access via localhost:30080
+      protocol: TCP
+    - containerPort: 30443    # Alternative HTTPS port
+      hostPort: 30443         # Access via localhost:30443
+      protocol: TCP
 ```
 
 ### 4. Run the setup script
