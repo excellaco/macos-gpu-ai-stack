@@ -164,6 +164,52 @@ helm list -A
 
 ---
 
+## Starting, Stopping and Restarting the Stack
+
+Use `cluster.sh` to manage the stack after initial setup:
+
+```bash
+# Start the stack
+/opt/homebrew/bin/bash cluster.sh start
+
+# Stop the stack
+/opt/homebrew/bin/bash cluster.sh stop
+
+# Restart the stack
+/opt/homebrew/bin/bash cluster.sh restart
+
+# Check status of all components
+/opt/homebrew/bin/bash cluster.sh status
+```
+
+The script reads `config.yaml` for machine and cluster names, sets the rootful Podman connection, refreshes the kubeconfig, and waits for the cluster node to be Ready before returning.
+
+---
+
+## Teardown
+
+To completely uninstall the stack and all its components:
+
+```bash
+/opt/homebrew/bin/bash teardown.sh
+```
+
+This will:
+- Stop and remove all Podman machines
+- Kill any stray `gvproxy` and `krunkit` processes
+- Uninstall `podman`, `podman-desktop`, `kind`, `helm`, `krunkit`, and `libkrun-efi`
+- Remove the `slp/krunkit` brew tap
+- Delete all Podman config and data directories
+
+> **Warning:** This is destructive and irreversible. All containers, images, volumes, and cluster data will be permanently deleted. Downloaded Ollama models will also be lost.
+
+To reinstall after teardown:
+```bash
+/opt/homebrew/bin/bash setup.sh
+```
+
+---
+
 ## Day-to-Day Operations
 
 ### Starting after a reboot
