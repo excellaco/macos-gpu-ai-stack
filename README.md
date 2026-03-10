@@ -3,7 +3,27 @@
 
 This stack runs a local Kubernetes cluster on macOS using Podman with GPU passthrough via krunkit/libkrun-efi, giving Ollama access to the host's Metal GPU instead of falling back to CPU inference.
 
-**Stack overview:**
+### Why run Ollama in Kubernetes instead of natively?
+
+Running Ollama natively on macOS via Metal will always be faster. However, the goal of this stack is not raw performance — it's to provide a **reliable, isolated, and extensible local AI platform** that you can build on top of.
+
+By running inside Kubernetes you get:
+- **Isolation** — models and services run in containers with defined resource limits, keeping your Mac environment clean
+- **Extensibility** — easily add services alongside Ollama such as n8n for workflow automation, Open WebUI for a chat interface, custom model training pipelines, full stack application testing, or any other containerized workload
+- **Reproducibility** — the entire stack is defined as code and can be spun up from scratch on any Apple Silicon Mac with a single script
+- **Service networking** — all services communicate via Kubernetes DNS, making it easy to wire up complex multi-service AI workflows
+
+### Performance expectations
+
+Due to the GPU passthrough path (`Ollama → Vulkan → virtio-gpu → krunkit → Metal`), you can expect roughly **60-70%+ of native Metal performance**. On an M3 Pro this translates to:
+
+| Model | Native Metal | This Stack | 
+|---|---|---|
+| llama3.2 | ~65 tok/s | ~49 tok/s |
+| mistral | ~35 tok/s | ~26 tok/s |
+| gpt-oss:20b | ~40 tok/s | ~27 tok/s |
+
+For most local AI development and automation workflows this performance level is more than sufficient, and the benefits of a fully containerized, reproducible environment outweigh the performance tradeoff.
 - **Podman** — container engine (replaces Docker)
 - **krunkit + libkrun-efi** — hypervisor that enables GPU passthrough from macOS to the VM
 - **kind** — Kubernetes cluster running inside the Podman VM
@@ -292,8 +312,7 @@ models:
   pull:
     - llama3.2
     - mistral
-    #- gemma3
-    #- gpt-oss:20b
+    - gpt-oss:20b
 ```
 
 ### Adding or removing models
