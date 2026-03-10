@@ -14,9 +14,10 @@ models:
     - llama3.2
     - mistral
     #- gemma3
-    #- gpt-oss:20b
+    - gpt-oss:20b
   create: []
   run: []
+  timeout: 7200
 
 persistence:
   data:
@@ -49,10 +50,10 @@ ingress:
 resources:
   requests:
     cpu: 1000m
-    memory: 8Gi
+    memory: 4Gi
   limits:
     cpu: 8000m
-    memory: 20Gi
+    memory: 8Gi
 
 jobResources:
   requests:
@@ -67,8 +68,8 @@ env:
   OLLAMA_MODELS: "/root/.ollama/models"
   OLLAMA_DEBUG: "0"
   OLLAMA_NUM_GPU: "999"
-  OLLAMA_NUM_CTX: "8192"
-  OLLAMA_NUM_THREAD: "8"
+  #OLLAMA_NUM_CTX: "4096"
+  OLLAMA_NUM_THREAD: "6"
   OLLAMA_FLASH_ATTENTION: "0"
   GGML_VULKAN_DISABLE_ASYNC_COMPUTE: "1"
   GGML_VULKAN_NO_ASYNC_COMPUTE: "1"
