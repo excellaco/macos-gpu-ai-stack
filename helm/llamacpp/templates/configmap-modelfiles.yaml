@@ -1,0 +1,53 @@
+{{- if .Values.models }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "llamacpp.fullname" . }}-model-loader-script
+  labels:
+    {{- include "llamacpp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: model-loader
+  annotations:
+    "helm.sh/hook":               post-install,post-upgrade
+    "helm.sh/hook-weight":        "-1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+  download.sh: |
+    #!/bin/sh
+    set -eu
+
+    {{- range .Values.models }}
+
+    MODEL_FILE="/models/{{ .filename }}"
+    if [ -f "$MODEL_FILE" ] && [ -s "$MODEL_FILE" ]; then
+      echo "Already present — skipping: {{ .filename }}"
+    else
+      echo "Downloading {{ .filename }} from {{ .hf_repo }}..."
+      curl -L \
+        --fail \
+        --retry 5 \
+        --retry-delay 15 \
+        --retry-connrefused \
+        --no-progress-meter \
+        --write-out "\n[curl] %{filename_effective} — %{size_download} bytes in %{time_total}s (%{speed_download} B/s)\n" \
+        "https://huggingface.co/{{ .hf_repo }}/resolve/main/{{ .filename }}" \
+        -o "${MODEL_FILE}.tmp" &
+      CURL_PID=$!
+
+      while kill -0 "$CURL_PID" 2>/dev/null; do
+        sleep 10
+        kill -0 "$CURL_PID" 2>/dev/null || break
+        if [ -f "${MODEL_FILE}.tmp" ]; then
+          BYTES=$(wc -c < "${MODEL_FILE}.tmp" 2>/dev/null || echo 0)
+          MB=$(( BYTES / 1024 / 1024 ))
+          echo "[progress] {{ .filename }}: ${MB} MB downloaded..."
+        fi
+      done
+
+      wait "$CURL_PID"
+      mv "${MODEL_FILE}.tmp" "$MODEL_FILE"
+      echo "Done: $(du -sh $MODEL_FILE | cut -f1) — {{ .filename }}"
+    fi
+    {{- end }}
+
+    echo "All models ready."
+{{- end }}

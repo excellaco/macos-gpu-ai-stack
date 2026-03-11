@@ -38,35 +38,12 @@ spec:
         - name: model-loader
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -euo pipefail
-
-              {{- range .Values.models }}
-              MODEL_FILE="/models/{{ .filename }}"
-              if [ -f "$MODEL_FILE" ] && [ -s "$MODEL_FILE" ]; then
-                echo "Already present — skipping: {{ .filename }}"
-              else
-                echo "Downloading {{ .filename }} from {{ .hf_repo }}..."
-                curl -L \
-                  --fail \
-                  --retry 5 \
-                  --retry-delay 15 \
-                  --retry-connrefused \
-                  --progress-bar \
-                  "https://huggingface.co/{{ .hf_repo }}/resolve/main/{{ .filename }}" \
-                  -o "${MODEL_FILE}.tmp" 2>&1
-                mv "${MODEL_FILE}.tmp" "$MODEL_FILE"
-                echo "Done: $(du -sh $MODEL_FILE | cut -f1) — {{ .filename }}"
-              fi
-
-              {{- end }}
-              echo "All models ready."
-
+          command: ["/bin/sh", "/scripts/download.sh"]
           volumeMounts:
             - name: model-storage
               mountPath: /models
+            - name: scripts
+              mountPath: /scripts
 
           resources:
             {{- toYaml .Values.jobResources | nindent 12 }}
@@ -75,4 +52,8 @@ spec:
         - name: model-storage
           persistentVolumeClaim:
             claimName: {{ include "llamacpp.fullname" . }}-pvc
+        - name: scripts
+          configMap:
+            name: {{ include "llamacpp.fullname" . }}-model-loader-script
+            defaultMode: 0755
 {{- end }}

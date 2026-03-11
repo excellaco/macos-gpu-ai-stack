@@ -38,8 +38,6 @@ vm_ssh() {
 # 1. CONFIG LOADING
 # =============================================================================
 
-# get_yaml_value FILE SECTION KEY
-# Reads a scalar value under a two-level key: <section>:\n  <key>: <value>
 get_yaml_value() {
   local file="$1" section="$2" key="$3"
   awk -v section="$section" -v key="$key" '
@@ -53,10 +51,6 @@ get_yaml_value() {
   ' "$file"
 }
 
-# get_yaml_list FILE TOP_KEY
-# Reads a top-level list:
-#   top_key:
-#     - value
 get_yaml_list() {
   local file="$1" key="$2"
   awk -v key="$key" '
@@ -70,26 +64,16 @@ get_yaml_list() {
   ' "$file"
 }
 
-# load_helm_releases FILE
-# Parses the helm.releases[] list:
-#   helm:
-#     releases:
-#       - name:      foo
-#         chart:     ./helm/foo
-#         namespace: foo
 load_helm_releases() {
   local file="$1"
   HELM_NAMES=(); HELM_CHARTS=(); HELM_NAMESPACES=()
 
-  # Use awk for robust parsing — avoids bash regex edge cases with hyphens
-  # and indentation inconsistencies in the helm.releases block.
   local parsed
   parsed=$(awk '
     /^helm:/        { in_helm=1; next }
     in_helm && /^[a-zA-Z]/ && !/^[[:space:]]/ { in_helm=0; in_rel=0; next }
     in_helm && /releases:/ { in_rel=1; next }
     in_rel && /^[[:space:]]+-[[:space:]]*$/ {
-      # bare dash line — next keys belong to this entry
       if (name != "") print name "|" chart "|" ns
       name=""; chart=""; ns=""
       next
@@ -124,15 +108,11 @@ load_helm_releases() {
     HELM_NAMESPACES+=("$ns")
   done <<< "$parsed"
 
-  # Debug: show what was parsed so namespace issues are immediately visible
   for i in "${!HELM_NAMES[@]}"; do
     info "  Helm release parsed: name=${HELM_NAMES[$i]} ns=${HELM_NAMESPACES[$i]} chart=${HELM_CHARTS[$i]}"
   done
 }
 
-# prompt_backends
-# Interactively ask which backend to enable, overriding config.yaml.
-# Default (just pressing Enter) is llamacpp only.
 prompt_backends() {
   echo ""
   echo -e "${BOLD}  Which inference backend would you like to install?${RESET}"
@@ -159,8 +139,6 @@ prompt_backends() {
   echo ""
 }
 
-# Override backend_enabled to use the interactively chosen set
-# instead of (or in addition to) what's in config.yaml.
 backend_enabled() {
   local target="$1"
   for b in "${ENABLED_BACKENDS[@]}"; do
@@ -184,15 +162,12 @@ load_config() {
   KRUNKIT_TAP=$(      get_yaml_value "$CONFIG_FILE" "krunkit" "brew_tap")
   KRUNKIT_PKG=$(      get_yaml_value "$CONFIG_FILE" "krunkit" "brew_pkg")
 
-  # Always load both backend configs so paths are available regardless of
-  # what the user selects at the prompt. backend_enabled() gates actual use.
   OLLAMA_IMAGE=$(get_yaml_value "$CONFIG_FILE" "ollama" "image")
   OLLAMA_DOCKERFILE="$SCRIPT_DIR/$(get_yaml_value "$CONFIG_FILE" "paths" "ollama_dockerfile")"
 
   LLAMACPP_IMAGE=$(get_yaml_value "$CONFIG_FILE" "llamacpp" "image")
   LLAMACPP_DOCKERFILE="$SCRIPT_DIR/$(get_yaml_value "$CONFIG_FILE" "paths" "llamacpp_dockerfile")"
 
-  # --- Namespaces & Helm releases --------------------------------------------
   NAMESPACES=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && NAMESPACES+=("$line")
@@ -200,7 +175,6 @@ load_config() {
 
   load_helm_releases "$CONFIG_FILE"
 
-  # --- Validate required fields ---------------------------------------------
   local missing=()
   [[ -z "$MACHINE_NAME"        ]] && missing+=("podman.machine_name")
   [[ -z "$MACHINE_CPU"         ]] && missing+=("podman.cpu")
@@ -245,7 +219,6 @@ check_prerequisites() {
   fi
 
   for i in "${!HELM_NAMES[@]}"; do
-    # Skip chart existence check for backends that are not enabled
     local name="${HELM_NAMES[$i]}"
     if [[ "$name" == "ollama"   ]] && ! backend_enabled "ollama";   then continue; fi
     if [[ "$name" == "llamacpp" ]] && ! backend_enabled "llamacpp"; then continue; fi
@@ -271,8 +244,6 @@ install_brew_pkg() {
 install_tools() {
   step "Installing required tools"
 
-  # Install krunkit FIRST — Podman detects it at install time and defaults to
-  # libkrun provider which is required for GPU passthrough.
   if command -v krunkit &>/dev/null; then
     warn "krunkit already installed — skipping"
   else
@@ -390,11 +361,6 @@ setup_kind_cluster() {
 # =============================================================================
 # 6. BUILD AND LOAD IMAGES
 # =============================================================================
-
-# build_and_load_image IMAGE DOCKERFILE LABEL
-# Shared logic for any backend image: copy context into VM, build with
-# --device /dev/dri (needed for the COPR Mesa downgrade step in the
-# Dockerfiles to detect the correct GPU driver), save to tar, load into kind.
 build_and_load_image() {
   local image="$1" dockerfile="$2" label="$3"
   local image_name="${image%%:*}"
@@ -404,7 +370,6 @@ build_and_load_image() {
 
   vm_ssh "mkdir -p /root/tmp"
 
-  # Check if already loaded into the kind node
   local already_loaded
   already_loaded=$(vm_ssh "podman exec ${KIND_CLUSTER_NAME}-control-plane \
     crictl images 2>/dev/null | grep -c '${image_name}'" || echo "0")
@@ -415,8 +380,6 @@ build_and_load_image() {
 
   [[ -f "$dockerfile" ]] || error "$label Dockerfile not found at $dockerfile"
 
-  # The build context is the Dockerfile's directory so COPY instructions
-  # (e.g. llama_tps_test.sh, patch_vulkan.py, patch_cmake.py) resolve correctly.
   local build_context
   build_context="$(dirname "$dockerfile")"
 
@@ -426,8 +389,6 @@ build_and_load_image() {
     vm_ssh "tar -C $vm_build_dir -xf -"
   success "$label build context copied to VM"
 
-  # Build inside the VM where /dev/dri exists. The Ollama Dockerfile needs
-  # this for the Mesa COPR downgrade; the llama.cpp Dockerfile does too.
   info "Building '$image' inside VM ($label) — this may take 10-20 minutes..."
   vm_ssh "podman build --device /dev/dri \
     -f ${vm_build_dir}/$(basename "$dockerfile") \
@@ -478,10 +439,6 @@ create_namespaces() {
 # =============================================================================
 # 8. HELM INSTALLS
 # =============================================================================
-
-# tail_init_logs NAMESPACE POD_PREFIX LABEL
-# Follows the model-loader Job pod logs until the job completes.
-# Reconnects automatically on HTTP/2 stream drops.
 tail_init_logs() {
   local ns="$1" pod_prefix="$2" label="$3"
   local timeout=3600 elapsed=0
@@ -504,19 +461,14 @@ tail_init_logs() {
   info "  (This may take several minutes depending on model size and internet speed)"
   echo ""
 
-  until kubectl get pod "$init_pod" -n "$ns" 2>/dev/null | grep -qE "Running|Completed|Error"; do
+  until kubectl get pod "$init_pod" -n "$ns" 2>/dev/null | grep -qE "Running|Completed|Error|Succeeded"; do
     sleep 3
   done
 
-  while true; do
-    local pod_phase
-    pod_phase=$(kubectl get pod "$init_pod" -n "$ns" --no-headers 2>/dev/null | awk '{print $3}')
-    if [[ "$pod_phase" == "Succeeded" || "$pod_phase" == "Completed" || "$pod_phase" == "Error" ]]; then
-      break
-    fi
-    kubectl logs -f "$init_pod" -n "$ns" 2>/dev/null || true
-    sleep 2
-  done
+  # Stream logs — kubectl logs -f exits naturally when the pod completes.
+  # The pod may be deleted immediately after by hook-delete-policy so
+  # guard with || true to prevent set -e from killing the script.
+  kubectl logs -f "$init_pod" -n "$ns" 2>/dev/null || true
 
   echo ""
   success "$label init job completed"
@@ -540,7 +492,10 @@ install_helm_charts() {
     fi
 
     if helm status "$name" -n "$ns" &>/dev/null; then
-      warn "Helm release '$name' already exists in '$ns' — skipping"
+      warn "Helm release '$name' already exists in '$ns' — skipping install"
+      case "$name" in
+        ollama|llamacpp) restart_and_verify ;;
+      esac
       continue
     fi
 
@@ -549,35 +504,45 @@ install_helm_charts() {
       2>"/tmp/helm_err_${name}" &
     local helm_pid=$!
 
-    # Give Helm a few seconds to fail fast on manifest errors (port conflicts,
-    # invalid resources, etc.) before we start tailing logs for pods that
-    # will never appear.
+    # Give Helm a few seconds to fail fast on manifest errors before
+    # tailing logs for pods that will never appear.
     sleep 5
     if ! kill -0 "$helm_pid" 2>/dev/null; then
-      # Process already exited — capture its exit code now before tailing,
-      # otherwise a second wait below returns 127 (already reaped) and the
-      # script exits even on success.
+      # Process already exited — capture exit code safely
       local helm_exit=0
-      wait "$helm_pid" || helm_exit=$?
-      if [[ $helm_exit -ne 0 ]]; then
+      set +e
+      wait "$helm_pid" 2>/dev/null
+      helm_exit=$?
+      set -e
+      if [[ $helm_exit -ne 0 && $helm_exit -ne 127 ]]; then
         error "Helm install failed for '$name': $(cat /tmp/helm_err_${name} 2>/dev/null)"
       fi
       rm -f "/tmp/helm_err_${name}"
       success "Helm release '$name' installed"
-      continue
+    else
+      case "$name" in
+        ollama)   tail_init_logs "$ns" "ollama-model-loader"   "Ollama" ;;
+        llamacpp) tail_init_logs "$ns" "llamacpp-model-loader" "llama.cpp" ;;
+      esac
+
+      local helm_exit=0
+      set +e
+      wait "$helm_pid" 2>/dev/null
+      helm_exit=$?
+      set -e
+      # exit 127 means the process was already reaped — treat as success
+      if [[ $helm_exit -ne 0 && $helm_exit -ne 127 ]]; then
+        error "Helm install failed for '$name': $(cat /tmp/helm_err_${name} 2>/dev/null)"
+      fi
+      rm -f "/tmp/helm_err_${name}"
+      success "Helm release '$name' installed"
     fi
 
+    # Restart Podman machine and cluster after each backend install so the
+    # GPU passthrough path is re-established before the final verify step.
     case "$name" in
-      ollama)   tail_init_logs "$ns" "ollama-model-loader"   "Ollama" ;;
-      llamacpp) tail_init_logs "$ns" "llamacpp-model-loader" "llama.cpp" ;;
+      ollama|llamacpp) restart_and_verify ;;
     esac
-
-    local helm_exit=0
-    wait "$helm_pid" || helm_exit=$?
-    rm -f "/tmp/helm_err_${name}"
-    [[ $helm_exit -ne 0 ]] && \
-      error "Helm install failed for '$name': $(cat /tmp/helm_err_${name} 2>/dev/null)"
-    success "Helm release '$name' installed"
   done
 }
 
@@ -676,7 +641,6 @@ main() {
   backend_enabled "llamacpp" && build_and_load_llamacpp_image
   create_namespaces
   install_helm_charts
-  restart_and_verify
   print_summary
 }
 
