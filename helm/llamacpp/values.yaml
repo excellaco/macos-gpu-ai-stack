@@ -100,24 +100,23 @@ startupProbe:
   httpGet:
     path: /health
     port: 8080
-  initialDelaySeconds: 60
-  periodSeconds: 30
-  timeoutSeconds: 10
-  # 20 × 30s = 10 minutes — enough time for a large model to load into VRAM
-  failureThreshold: 20
-
-livenessProbe:
-  enabled: true
-  initialDelaySeconds: 30
-  periodSeconds: 10
+  initialDelaySeconds: 30   # give llama-server time to start listening
+  periodSeconds: 10          # check every 10s during startup
   timeoutSeconds: 5
-  failureThreshold: 6
+  failureThreshold: 60       # 60 × 10s = 10 minutes max for model to load into GPU
 
 readinessProbe:
   enabled: true
-  initialDelaySeconds: 15
-  periodSeconds: 5
-  timeoutSeconds: 3
+  initialDelaySeconds: 0     # startupProbe already gates this — no extra delay needed
+  periodSeconds: 15          # don't hammer /health while GPU is busy
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 0     # startupProbe already gates this too
+  periodSeconds: 30
+  timeoutSeconds: 5
   failureThreshold: 3
 
 # ── Logging ───────────────────────────────────────────────────────────────────

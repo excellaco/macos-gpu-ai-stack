@@ -38,6 +38,7 @@ vm_ssh() {
 # 1. CONFIG LOADING
 # =============================================================================
 
+# get_yaml_value FILE SECTION KEY
 get_yaml_value() {
   local file="$1" section="$2" key="$3"
   awk -v section="$section" -v key="$key" '
@@ -51,6 +52,7 @@ get_yaml_value() {
   ' "$file"
 }
 
+# get_yaml_list FILE TOP_KEY
 get_yaml_list() {
   local file="$1" key="$2"
   awk -v key="$key" '
@@ -64,6 +66,7 @@ get_yaml_list() {
   ' "$file"
 }
 
+# load_helm_releases FILE
 load_helm_releases() {
   local file="$1"
   HELM_NAMES=(); HELM_CHARTS=(); HELM_NAMESPACES=()
@@ -113,6 +116,7 @@ load_helm_releases() {
   done
 }
 
+# prompt_backends
 prompt_backends() {
   echo ""
   echo -e "${BOLD}  Which inference backend would you like to install?${RESET}"
@@ -361,6 +365,7 @@ setup_kind_cluster() {
 # =============================================================================
 # 6. BUILD AND LOAD IMAGES
 # =============================================================================
+
 build_and_load_image() {
   local image="$1" dockerfile="$2" label="$3"
   local image_name="${image%%:*}"
@@ -439,6 +444,7 @@ create_namespaces() {
 # =============================================================================
 # 8. HELM INSTALLS
 # =============================================================================
+
 tail_init_logs() {
   local ns="$1" pod_prefix="$2" label="$3"
   local timeout=3600 elapsed=0
@@ -465,9 +471,6 @@ tail_init_logs() {
     sleep 3
   done
 
-  # Stream logs — kubectl logs -f exits naturally when the pod completes.
-  # The pod may be deleted immediately after by hook-delete-policy so
-  # guard with || true to prevent set -e from killing the script.
   kubectl logs -f "$init_pod" -n "$ns" 2>/dev/null || true
 
   echo ""
@@ -481,7 +484,6 @@ install_helm_charts() {
     local chart="${HELM_CHARTS[$i]}"
     local ns="${HELM_NAMESPACES[$i]}"
 
-    # Skip backend charts whose backend is not enabled
     if [[ "$name" == "ollama"   ]] && ! backend_enabled "ollama";   then
       info "Skipping Helm release '$name' — ollama not selected"
       continue
@@ -504,17 +506,11 @@ install_helm_charts() {
       2>"/tmp/helm_err_${name}" &
     local helm_pid=$!
 
-    # Give Helm a few seconds to fail fast on manifest errors before
-    # tailing logs for pods that will never appear.
     sleep 5
     if ! kill -0 "$helm_pid" 2>/dev/null; then
-      # Process already exited — capture exit code safely
       local helm_exit=0
-      set +e
-      wait "$helm_pid" 2>/dev/null
-      helm_exit=$?
-      set -e
-      if [[ $helm_exit -ne 0 && $helm_exit -ne 127 ]]; then
+      wait "$helm_pid" || helm_exit=$?
+      if [[ $helm_exit -ne 0 ]]; then
         error "Helm install failed for '$name': $(cat /tmp/helm_err_${name} 2>/dev/null)"
       fi
       rm -f "/tmp/helm_err_${name}"
@@ -530,7 +526,6 @@ install_helm_charts() {
       wait "$helm_pid" 2>/dev/null
       helm_exit=$?
       set -e
-      # exit 127 means the process was already reaped — treat as success
       if [[ $helm_exit -ne 0 && $helm_exit -ne 127 ]]; then
         error "Helm install failed for '$name': $(cat /tmp/helm_err_${name} 2>/dev/null)"
       fi
@@ -538,8 +533,6 @@ install_helm_charts() {
       success "Helm release '$name' installed"
     fi
 
-    # Restart Podman machine and cluster after each backend install so the
-    # GPU passthrough path is re-established before the final verify step.
     case "$name" in
       ollama|llamacpp) restart_and_verify ;;
     esac
@@ -547,7 +540,82 @@ install_helm_charts() {
 }
 
 # =============================================================================
-# 9. RESTART AND VERIFY
+# 9. WAIT FOR BACKEND DEPLOYMENT
+# =============================================================================
+
+# wait_for_backend_deployment BACKEND
+# Waits for:
+#   1. The deployment object to exist
+#   2. The rollout to complete (all replicas ready)
+#   3. The pod to be in Running state
+#   4. The /health endpoint to respond (handles slow device discovery / weight loading)
+wait_for_backend_deployment() {
+  local backend="$1"
+  local ns="$backend"
+  local timeout=300 elapsed=0
+
+  step "Waiting for $backend deployment to be fully ready"
+
+  # 1. Wait for the deployment object to appear
+  info "Waiting for $backend deployment object..."
+  elapsed=0
+  until kubectl get deployment "$backend" -n "$ns" &>/dev/null 2>&1; do
+    (( elapsed >= timeout )) && error "Timed out waiting for $backend deployment to appear"
+    sleep 5; (( elapsed += 5 ))
+    info "  Still waiting for deployment object... (${elapsed}s / ${timeout}s)"
+  done
+  success "$backend deployment object found"
+
+  # 2. Wait for rollout (all replicas scheduled and ready)
+  info "Waiting for $backend rollout to complete..."
+  kubectl rollout status deployment/"$backend" -n "$ns" --timeout="${timeout}s" || \
+    error "$backend rollout failed — check: kubectl describe deployment/$backend -n $ns"
+  success "$backend rollout complete"
+
+  # 3. Wait for at least one pod to reach Running
+  info "Waiting for $backend pod to reach Running state..."
+  elapsed=0
+  until kubectl get pods -n "$ns" --no-headers 2>/dev/null \
+      | grep -E "^$backend-" | awk '{print $3}' | grep -q "^Running$"; do
+    (( elapsed >= timeout )) && error "Timed out waiting for $backend pod to reach Running"
+    sleep 5; (( elapsed += 5 ))
+    # Print current pod status on each poll so the user can see progress
+    local pod_status
+    pod_status=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null \
+      | grep -E "^$backend-" | awk '{print $1, $3, $4}' || echo "  (no pods yet)")
+    info "  Pod status: $pod_status (${elapsed}s / ${timeout}s)"
+  done
+  success "$backend pod is Running"
+
+  # 4. Wait for /health endpoint — the process may be up but still loading
+  #    model weights or discovering GPU devices before it starts serving.
+  local svc_port
+  case "$backend" in
+    llamacpp) svc_port=30480 ;;
+    ollama)   svc_port=30434 ;;
+    *)
+      warn "Unknown backend '$backend' — skipping /health check"
+      return 0
+      ;;
+  esac
+
+  info "Waiting for $backend /health on http://localhost:${svc_port}/health ..."
+  info "  (llama.cpp loads weights and discovers GPU devices before serving)"
+  elapsed=0
+  until curl -sf --max-time 5 "http://localhost:${svc_port}/health" &>/dev/null; do
+    if (( elapsed >= timeout )); then
+      warn "Timed out waiting for $backend /health after ${timeout}s — it may still be initializing"
+      warn "  Check manually: curl http://localhost:${svc_port}/health"
+      return 0
+    fi
+    sleep 5; (( elapsed += 5 ))
+    info "  Still waiting for /health... (${elapsed}s / ${timeout}s)"
+  done
+  success "$backend /health OK on port $svc_port"
+}
+
+# =============================================================================
+# 10. RESTART AND VERIFY
 # =============================================================================
 restart_and_verify() {
   step "Restarting Podman machine and cluster"
@@ -589,10 +657,22 @@ restart_and_verify() {
     info "  Still waiting... (${elapsed}s / ${timeout}s)"
   done
   success "Cluster node is Ready"
+
+  # Wait for any enabled backend deployments that already exist (i.e. Helm has
+  # already deployed them in a prior iteration) to come back healthy after the
+  # Podman/kind restart.  The guard on kubectl get deployment means this is a
+  # no-op on the very first restart (before Helm has run for that backend).
+  for backend in "llamacpp" "ollama"; do
+    if backend_enabled "$backend"; then
+      if kubectl get deployment "$backend" -n "$backend" &>/dev/null 2>&1; then
+        wait_for_backend_deployment "$backend"
+      fi
+    fi
+  done
 }
 
 # =============================================================================
-# 10. SUMMARY
+# 11. SUMMARY
 # =============================================================================
 print_summary() {
   echo ""
